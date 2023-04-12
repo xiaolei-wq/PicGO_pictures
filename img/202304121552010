@@ -1,0 +1,28 @@
+FROM ubuntu:18.04
+
+ENV PYTHON_VERSION=3.6
+ENV JAVA_HOME=/usr/local/java/jdk-11.0.12
+ENV JRE_HOME=${JAVA_HOME}/jre
+ENV CLASSPATH=.:${JAVA_HOME}/lib:${JRE_HOME}/lib
+ENV PATH=.:${JAVA_HOME}/bin:$PATH:$JRE_HOME/bin:$PATH:$HOME/bin:$PATH
+ENV PATH="/opt/gradle/gradle-5.6.4/bin:$PATH"
+ENV ANDROID_SDK_HOME=/home/jenkins/android-sdk-linux  
+ENV PATH=${ANDROID_SDK_HOME}/tools:$PATH  
+ENV PATH=${ANDROID_SDK_HOME}/platform-tools:$PATH  
+ENV ANDROID_SDK_ROOT=/home/jenkins/android-sdk-linux
+
+RUN sed -i "s@\(archive\|security\).ubuntu.com@mirrors.tuna.tsinghua.edu.cn@g" /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y git ssh && \
+    apt-get install --no-install-recommends -y python$PYTHON_VERSION python3-pip && \
+    ln -s /usr/bin/python3.6 /usr/bin/python && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY android-sdk-linux /home/jenkins/android-sdk-linux
+COPY gradle /opt/gradle
+COPY jdk-11.0.12 /usr/local/java/jdk-11.0.12
+
+RUN mkdir /root/.ssh/
+RUN ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
+RUN chmod 700 /root/.ssh/
