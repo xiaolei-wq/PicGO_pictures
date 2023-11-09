@@ -1,0 +1,134 @@
+def mysh(cmd, returnStatus) {
+    return sh(script: '#!/bin/sh -e\n'+cmd,returnStatus:returnStatus)
+}
+
+pipeline {
+    agent {label "beetle_bt"}
+    options {gitLabConnection ("gitlab_inter")
+        skipDefaultCheckout(true)
+        gitlabCommitStatus('smoke')
+    }
+    environment {
+        dir_path = "/home/jenkins/build_script"
+        beetleplus_smoke_command = "smoke_wq703x"
+		beetleplus_release_command = "release def=RELEASE"
+        beetleplus_chip_name = "wq703x"
+    }
+
+    stages {
+        stage('prepare') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                checkout changelog: true, poll: true, scm: [
+                        $class: 'GitSCM',
+                        branches: [[name: "origin/${env.gitlabSourceBranch}"]],
+                        extensions: [[$class: 'PreBuildMerge', options: [fastForwardMode: 'FF', mergeRemote: 'origin', mergeStrategy: 'DEFAULT', mergeTarget: "${env.gitlabTargetBranch}"]]],
+                        userRemoteConfigs: [[name: 'origin', credentialsId: '3eba9843-b209-4230-ad1b-fa0e6b282e85',refspec: '+refs/heads/*:refs/remotes/origin/*',url: 'git@192.168.3.36:beetle_plus/beetle_plus_bt_stack.git']]
+                ]
+            }
+        }
+
+        /*stage('start_note_mr') {
+            steps {
+                script {
+                    out=mysh ("ls $dir_path > /dev/null",true)
+                    if (out == 0) {
+                        println "dir is exist"
+                    }else if(out == 2){
+                        println "dir is not exist"
+                        sh 'mkdir -p $dir_path'
+                    }else{
+                        error("command is error,please check")
+                    }
+
+                    sh 'file_server_name=build@192.168.3.37;remote_path=/data/share/release2/build_script;scp -r $file_server_name:$remote_path/beetle/tool/python-config.cfg $dir_path;scp -r $file_server_name:$remote_path/beetle/tool/gitlab_api.py $dir_path'
+                    dir("$dir_path") {
+                        sh 'chmod 777 gitlab_api.py;python gitlab_api.py ${gitlabMergeRequestIid} ${BUILD_URL} ${gitlabMergeRequestLastCommit} ${gitlabSourceBranch} ${gitlabTargetBranch} "${gitlabSourceRepoName}" "smoke"'
+                    }
+                }
+            }
+        }*/
+
+        stage('Parallel Stage') {
+            failFast true
+            parallel {
+                stage('check_message') {
+                    steps {
+                        script {
+                            message = sh(returnStdout:true,script: "git log --pretty='%s' ${gitlabMergeRequestLastCommit} -1").trim()
+                            println "message show:$message"
+                            job_message = build job: "check_message_style_gitlab",parameters:[string(name:"commit_message",value:"${message}"),string(name:"project",value:"${gitlabSourceRepoName}"),string(name:"patchset",value:"${gitlabMergeRequestIid}"),string(name:"commit",value:"${gitlabMergeRequestLastCommit}")]
+                            println job_message.getResult()
+                        }
+                    }
+                }
+
+                stage('build') {
+                    when {
+                        expression { (!"${gitlabTargetBranch}".contains('dev/k2'.toString())) && "${gitlabTargetBranch}" != 'dev/k2_tws' && "${gitlabTargetBranch}" != 'dev/7036rom' }
+                    }
+                    steps {
+                        script {
+                            build_job = build job: "beetleplus_bt_build",parameters:[string(name:"BUILD_T",value:"${BUILD_NUMBER}"),string(name:"SUBMODULE_TYPE",value:"beetle_plus_bt_stack"),string(name:"BRANCH_TAG",value:"${gitlabTargetBranch}"),string(name:"source_branch",value:"${gitlabSourceBranch}"),string(name:"newbuild",value:"${BUILD_NUMBER}"),string(name:"smoke_command",value:"${beetleplus_smoke_command}"),string(name:"chip_name",value:"${beetleplus_chip_name}")]
+                            println build_job.getResult()
+                        }
+                    }
+                }
+				
+				stage('build_release') {
+                    when {
+                        expression { (!"${gitlabTargetBranch}".contains('dev/k2'.toString())) && "${gitlabTargetBranch}" != 'dev/k2_tws' && "${gitlabTargetBranch}" != 'dev/7036rom' }
+                    }
+                    steps {
+                        script {
+                            build_job = build job: "beetleplus_bt_build",parameters:[string(name:"BUILD_T",value:"${BUILD_NUMBER}"),string(name:"SUBMODULE_TYPE",value:"beetle_plus_bt_stack"),string(name:"BRANCH_TAG",value:"${gitlabTargetBranch}"),string(name:"source_branch",value:"${gitlabSourceBranch}"),string(name:"newbuild",value:"${BUILD_NUMBER}"),string(name:"smoke_command",value:"${beetleplus_release_command}"),string(name:"chip_name",value:"${beetleplus_chip_name}")]
+                            println build_job.getResult()
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('remote_test_outer') {
+            when {
+                expression { (!"${gitlabTargetBranch}".contains('dev/k2'.toString())) && "${gitlabTargetBranch}" != 'dev/k2_tws' && "${gitlabTargetBranch}" != 'dev/7036rom'&& "${gitlabTargetBranch}" != 'dev/bqb' }
+            }
+            steps {
+                script {
+                    def handle = triggerRemoteJob(
+                            remoteJenkinsName: 'jenkins_outer_bt',
+                            job: 'smoke_test_beetleplus_bt',
+                            parameters: 'BUILD_T=${BUILD_NUMBER}\nbranch=${gitlabTargetBranch}\nsource_branch=${gitlabSourceBranch}\nnewbuild=${BUILD_NUMBER}\nshort_commit=${gitlabMergeRequestLastCommit}\nmr_url=${gitlabSourceRepoHomepage}-/merge_requests/${gitlabMergeRequestIid}',
+                            blockBuildUntilComplete: true,
+                            abortTriggeredJob: true
+                            //useCrumbCache: true, useJobInfoCache: true, maxConn: 1, pollInterval: 10
+                    )
+                    echo 'Remote Status: ' + handle.getBuildStatus().toString()
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+//            dir("/home/jenkins/build_script") {
+//                sh 'python gitlab_api.py ${gitlabMergeRequestIid} ${BUILD_URL} ${gitlabMergeRequestLastCommit} ${gitlabSourceBranch} ${gitlabTargetBranch} "${gitlabSourceRepoName}" "smoke" "Failed"'
+//            }
+            updateGitlabCommitStatus name: 'smoke', state: 'failed'
+        }
+        success {
+//            dir("/home/jenkins/build_script") {
+//                sh 'python gitlab_api.py ${gitlabMergeRequestIid} ${BUILD_URL} ${gitlabMergeRequestLastCommit} ${gitlabSourceBranch} ${gitlabTargetBranch} "${gitlabSourceRepoName}" "smoke" "Success"'
+//            }
+            updateGitlabCommitStatus name: 'smoke', state: 'success'
+        }
+        aborted {
+            updateGitlabCommitStatus name: 'smoke', state: 'canceled'
+        }
+    }
+}
